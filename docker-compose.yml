@@ -1,0 +1,112 @@
+version: '3.8'
+
+services:
+  # SQLite Database Server using rqlite
+  database:
+    image: rqlite/rqlite:latest
+    container_name: alert-system-db
+    ports:
+      - "4001:4001"  # HTTP API port (accessible for queries)
+      - "4002:4002"  # Raft port (internal)
+    volumes:
+      - alert-data:/data
+    networks:
+      - alert-network
+    healthcheck:
+      test: ["CMD", "rqlite", "-s", "http://localhost:4001", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: alert-system-backend
+    # No direct port mapping - access through nginx proxy
+    expose:
+      - "3001"
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - DATABASE_URL=http://database:4001
+      - DATABASE_HOST=database
+      - DATABASE_PORT=4001
+      - SMTP_HOST=mailhog
+      - SMTP_PORT=1025
+      - SMTP_FROM=noreply@alertsystem.local
+    networks:
+      - alert-network
+    depends_on:
+      database:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3001/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 40s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: alert-system-frontend
+    # No direct port mapping - access through nginx proxy
+    expose:
+      - "80"
+    depends_on:
+      - backend
+    networks:
+      - alert-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: alert-system-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx-proxy.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - alert-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  # MailHog for local email testing
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: alert-system-mailhog
+    ports:
+      - "1025:1025"  # SMTP
+      - "8025:8025"  # Web UI
+    networks:
+      - alert-network
+
+volumes:
+  alert-data:
+    driver: local
+
+networks:
+  alert-network:
+    driver: bridge
+
+# Usage:
+# docker compose up -d         # Start all services
+# docker compose down          # Stop all services
+# docker compose logs -f       # View logs
+# docker compose ps            # Check status
