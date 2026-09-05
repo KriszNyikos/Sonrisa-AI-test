@@ -436,12 +436,50 @@ const keywords = {
 
 ## 10. Deployment & Docker
 
-### Docker Networking Architecture
+### Docker Architecture Overview
 
-The application uses **Docker networks** to enable secure inter-service communication:
-- Services communicate via internal DNS (e.g., `backend:3000` from frontend container)
-- Exposed ports are configurable via `.env` file for flexibility across environments
-- Isolates internal traffic from external access
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Docker Compose Network                    │
+│               (alert-system-network: 172.28.0.0/16)         │
+├─────────────────────────────────────────────────────────────┤
+│                                                               │
+│  ┌──────────────────┐          ┌──────────────────────────┐ │
+│  │  Backend Service │          │  Frontend + Nginx        │ │
+│  │  (Node.js)       │◄────────►│  (Vue 3)                 │ │
+│  │  :3000 (internal)│          │  :80 (nginx)             │ │
+│  └──────────────────┘          └──────────────────────────┘ │
+│         ▲                               ▲                    │
+│         │                               │                    │
+│    ┌────┴─────────────────────────────┬┘                    │
+│    │        SQLite Database           │                     │
+│    │   (File-based, persisted)        │                     │
+│    └────────────────────────────────────┘                    │
+│                                                               │
+└─────────────────────────────────────────────────────────────┘
+         ▲                                    ▲
+         │ BACKEND_PORT (3000)               │ FRONTEND_PORT (5173)
+         │                                   │
+    ┌────┴────────────────────────────────┬─┘
+    │         Host Machine                │
+    └─────────────────────────────────────┘
+```
+
+### Database Strategy: SQLite (File-Based)
+
+SQLite is a **file-based database**, not a service:
+- **No separate Docker image needed** - SQLite is embedded in the backend
+- **Persisted via Docker volumes**: `./backend/data:/app/data`
+- **Shared access**: Backend reads/writes to file system
+- **Development advantage**: No separate database setup required
+- **Migration**: For production, can migrate to PostgreSQL/MySQL later
+
+### Nginx Strategy: Reverse Proxy & Static Server
+
+Nginx serves two critical functions:
+1. **Static File Server**: Serves built Vue 3 frontend (dist folder)
+2. **Reverse Proxy**: Routes API requests to backend service
+3. **SPA Router**: Falls back to index.html for client-side routing
 
 ### Environment Configuration
 
@@ -454,7 +492,6 @@ DB_PATH=/app/data/alerts.db
 
 # Frontend Configuration
 FRONTEND_PORT=5173
-FRONTEND_ENV=development
 
 # Internal Communication (for containers)
 BACKEND_HOST=backend
@@ -479,6 +516,7 @@ LOG_LEVEL=info
 version: '3.8'
 
 services:
+  # Backend: Node.js Express API
   backend:
     build: ./backend
     container_name: alert-backend
@@ -506,21 +544,21 @@ services:
       retries: 3
       start_period: 40s
 
+  # Frontend: Nginx serving Vue 3 SPA
   frontend:
     build: ./frontend
     container_name: alert-frontend
     ports:
       - "${FRONTEND_PORT}:80"
-    environment:
-      - NODE_ENV=${FRONTEND_ENV}
-      - VITE_API_URL=${VITE_API_URL}
+    volumes:
+      - ./frontend/dist:/usr/share/nginx/html:ro
     networks:
       - alert-network
     depends_on:
       backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:80"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -536,7 +574,7 @@ networks:
 
 ### Dockerfiles
 
-**Backend (Node.js)**
+**Backend (Node.js + SQLite)**
 ```dockerfile
 FROM node:20-alpine
 
@@ -551,7 +589,7 @@ RUN npm ci --only=production
 # Copy built TypeScript
 COPY dist ./dist
 
-# Create data directory for SQLite
+# Create persistent data directory for SQLite
 RUN mkdir -p /app/data
 
 EXPOSE 3000
@@ -562,9 +600,9 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 CMD ["node", "dist/app.js"]
 ```
 
-**Frontend (Vue 3 + Nginx)**
+**Frontend (Vue 3 + Nginx Reverse Proxy)**
 ```dockerfile
-# Build stage
+# Build stage: Compile Vue 3 with Vite
 FROM node:20-alpine as builder
 
 WORKDIR /app
@@ -575,11 +613,13 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
-# Production stage
+# Production stage: Nginx serving SPA + API proxy
 FROM nginx:alpine
 
-# Copy nginx configuration
-COPY nginx.conf /etc/nginx/nginx.conf
+# Copy custom nginx configuration for SPA routing and API proxy
+COPY ./nginx.conf /etc/nginx/nginx.conf
+
+# Copy built Vue 3 dist folder
 COPY --from=builder /app/dist /usr/share/nginx/html
 
 EXPOSE 80
@@ -592,6 +632,7 @@ CMD ["nginx", "-g", "daemon off;"]
 
 ### Nginx Configuration (frontend/nginx.conf)
 ```nginx
+user nginx;
 worker_processes auto;
 error_log /var/log/nginx/error.log warn;
 pid /var/run/nginx.pid;
@@ -609,31 +650,83 @@ http {
                   '"$http_user_agent" "$http_x_forwarded_for"';
 
   access_log /var/log/nginx/access.log main;
+  
   sendfile on;
   tcp_nopush on;
   keepalive_timeout 65;
+  types_hash_max_size 2048;
+  
   gzip on;
+  gzip_vary on;
+  gzip_proxied any;
+  gzip_comp_level 6;
+  gzip_types text/plain text/css text/xml text/javascript 
+             application/json application/javascript application/xml+rss 
+             application/rss+xml font/truetype font/opentype 
+             application/vnd.ms-fontobject image/svg+xml;
 
   server {
     listen 80;
     server_name _;
     root /usr/share/nginx/html;
+    index index.html;
 
-    location / {
-      try_files $uri $uri/ /index.html;
+    # Serve static files with caching
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+      expires 1y;
+      add_header Cache-Control "public, immutable";
+      access_log off;
     }
 
-    location /api {
+    # Proxy API requests to backend service
+    location /api/ {
       proxy_pass http://backend:3000;
       proxy_http_version 1.1;
       proxy_set_header Upgrade $http_upgrade;
       proxy_set_header Connection 'upgrade';
       proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
       proxy_cache_bypass $http_upgrade;
+      proxy_read_timeout 60s;
+      proxy_connect_timeout 60s;
+    }
+
+    # SPA routing: Fall back to index.html for client-side routing
+    location / {
+      try_files $uri $uri/ /index.html;
+      add_header Cache-Control "no-cache, no-store, must-revalidate";
+    }
+
+    # Health check endpoint for Docker
+    location /health {
+      access_log off;
+      return 200 "OK";
+      add_header Content-Type text/plain;
     }
   }
 }
 ```
+
+### Frontend Directory Structure
+```
+frontend/
+├── src/
+│   ├── components/
+│   ├── pages/
+│   ├── services/
+│   ├── App.vue
+│   └── main.ts
+├── dist/                    (Generated by build, served by nginx)
+├── package.json
+├── Dockerfile              (Multi-stage: build Vue, run nginx)
+├── nginx.conf             (IMPORTANT: Nginx config - copied in Dockerfile)
+├── tsconfig.json
+└── vite.config.ts
+```
+
+**Key**: `nginx.conf` must be in the `frontend/` root directory for Docker to copy it during build.
 
 ### Running the Application
 
@@ -646,18 +739,39 @@ cd Sonrisa-AI-test
 cp .env.example .env
 # Edit .env to customize ports if needed
 
-# Start all services
+# Build and start all services (backend + frontend with nginx)
 docker-compose up -d
 
 # View logs
 docker-compose logs -f
 
+# View specific service logs
+docker-compose logs -f backend
+docker-compose logs -f frontend
+
 # Stop services
 docker-compose down
 
-# Clean up volumes (careful!)
-docker-compose down -v
+# Clean up volumes and images (careful!)
+docker-compose down -v --rmi all
 ```
+
+### Accessing the Application
+
+| Component | URL | Purpose |
+|-----------|-----|---------|
+| Frontend (Nginx) | http://localhost:5173 | User UI (default port from .env) |
+| Backend API | http://localhost:3000 | REST API endpoints |
+| API from Frontend | http://backend:3000 | Internal container communication |
+| Health Check | http://localhost:3000/health | Backend health |
+
+### SQLite Database Notes
+
+- **Location**: `./backend/data/alerts.db` (host machine)
+- **Persistence**: Docker volume mounts to `/app/data` inside container
+- **No external service**: SQLite is file-based, embedded in backend
+- **Backup**: Copy `./backend/data/alerts.db` to backup database
+- **Reset**: Delete `./backend/data/` folder and restart containers to rebuild schema
 
 ### Example `.env.example`
 ```env
@@ -667,20 +781,20 @@ FRONTEND_PORT=5173
 
 # Environment
 BACKEND_ENV=development
-FRONTEND_ENV=development
 
-# Database
+# Database (SQLite file path)
 DB_PATH=/app/data/alerts.db
 
-# Backend URL for frontend (container-to-container)
+# Backend URL for frontend (container-to-container communication)
 VITE_API_URL=http://backend:3000
 
-# Optional services
+# Optional Email Service
 SMTP_HOST=
 SMTP_PORT=587
 SMTP_USER=
 SMTP_PASSWORD=
 
+# Optional Slack Webhook
 SLACK_WEBHOOK_URL=
 
 # Logging
