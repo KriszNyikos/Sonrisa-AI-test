@@ -203,4 +203,22 @@ export class NotificationChannelRepository {
       throw error;
     }
   }
+
+  /**
+   * Deletes all notification channels for an alert
+   */
+  async deleteByAlertId(alertId: string): Promise<number> {
+    try {
+      const result = await this.db.run(`DELETE FROM notification_channels WHERE alert_id = ?`, [alertId]);
+
+      const count = (result as any).changes || 0;
+      if (count > 0) {
+        logger.info('Notification channels deleted for alert', { alertId, count });
+      }
+      return count;
+    } catch (error) {
+      logger.error('Failed to delete channels for alert', error);
+      throw error;
+    }
+  }
 }
