@@ -1,5 +1,4 @@
 import NewsService from '../../src/services/NewsService';
-import { NewsRepository } from '../../src/repositories/NewsRepository';
 import { NewsItem, PaginationParams } from '../../src/types';
 
 jest.mock('../../src/repositories/NewsRepository');

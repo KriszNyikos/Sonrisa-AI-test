@@ -1,6 +1,4 @@
 import NotificationChannelService from '../../src/services/NotificationChannelService';
-import { NotificationChannelRepository } from '../../src/repositories/NotificationChannelRepository';
-import { AlertRepository } from '../../src/repositories/AlertRepository';
 import { NotificationChannel, Alert } from '../../src/types';
 
 jest.mock('../../src/repositories/NotificationChannelRepository');
