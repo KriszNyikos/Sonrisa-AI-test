@@ -46,7 +46,7 @@ describe('Validators', () => {
   describe('isValidSlackWebhookUrl', () => {
     it('should validate Slack webhook URLs', () => {
       expect(
-        isValidSlackWebhookUrl('https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX'),
+        isValidSlackWebhookUrl('https://hooks.slack.com/services/TTEST0000/BTEST0000/test0000000000000000000'),
       ).toBe(true);
     });
 
@@ -159,7 +159,7 @@ describe('Validators', () => {
       expect(
         isValidChannelDestination(
           'slack',
-          'https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX',
+          'https://hooks.slack.com/services/TTEST0000/BTEST0000/test0000000000000000000',
         ),
       ).toBe(true);
     });
