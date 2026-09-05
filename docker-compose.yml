@@ -1,18 +1,17 @@
 version: '3.8'
 
 services:
-  # SQLite Database Service
+  # SQLite Database Service using Alpine SQLite
   database:
-    image: nouchka/sqlite3:latest
+    image: alpine/sqlite:latest
     container_name: alert-system-db
+    command: sqlite3 /data/alerts.db ".databases"
     volumes:
-      - alert-data:/root/db
-    environment:
-      - SQLITE_DATABASE=alerts.db
+      - alert-data:/data
     networks:
       - alert-network
     healthcheck:
-      test: ["CMD", "sqlite3", "/root/db/alerts.db", "SELECT 1"]
+      test: ["CMD", "sqlite3", "/data/alerts.db", "SELECT 1"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -28,14 +27,12 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3001
-      - DATABASE_PATH=/app/data/alerts.db
-      - DATABASE_HOST=database
-      - DATABASE_PORT=3306
+      - DATABASE_PATH=/data/alerts.db
       - SMTP_HOST=mailhog
       - SMTP_PORT=1025
       - SMTP_FROM=noreply@alertsystem.local
     volumes:
-      - alert-data:/app/data
+      - alert-data:/data
     networks:
       - alert-network
     depends_on:
