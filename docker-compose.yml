@@ -5,13 +5,14 @@ services:
   database:
     image: alpine/sqlite:latest
     container_name: alert-system-db
-    command: sqlite3 /data/alerts.db ".databases"
     volumes:
       - alert-data:/data
+      - ./init-db.sh:/usr/local/bin/init-db.sh:ro
     networks:
       - alert-network
+    entrypoint: sh /usr/local/bin/init-db.sh
     healthcheck:
-      test: ["CMD", "sqlite3", "/data/alerts.db", "SELECT 1"]
+      test: ["CMD", "sqlite3", "/data/alerts.db", "SELECT 1;"]
       interval: 10s
       timeout: 5s
       retries: 3
